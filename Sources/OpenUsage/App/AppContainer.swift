@@ -43,6 +43,12 @@ final class AppContainer {
     /// The provider runtimes, kept so on-demand credential detection (the Customize "Reset All" reseed)
     /// can re-probe `hasLocalCredentials()` the same way first-run seeding does.
     private let providers: [ProviderRuntime]
+    /// Extra accounts (beyond the default CLI login) the user has added. Each is expanded into its own
+    /// provider instance below; the Accounts settings tab drives it (changes apply on next launch).
+    let accounts: AccountsStore
+    /// User-chosen names for accounts, keyed by email. Drives the dashboard card titles and is editable
+    /// in the Accounts settings; live (no relaunch needed) since it's read at render time.
+    let accountNames = AccountNamesStore()
     /// Read-only usage API on 127.0.0.1:6736 for other local apps (silently off when the port is taken).
     private let localAPI: LocalUsageServer
     // A `let` of a `Sendable` `Task` is implicitly nonisolated, so the nonisolated `deinit` can cancel it.
@@ -70,7 +76,11 @@ final class AppContainer {
         // the snapshot cache's account stamp and reconciles the account registry.
         let accountAssembly = ProviderAccountAssembly.make(waitsForLoginShell: true)
 
-        let providers = ProviderCatalog.make()
+        let accounts = AccountsStore()
+        // The installed catalog first (its order seeds the default provider order), then the user's
+        // extra accounts expanded into their own provider instances (Claude/Codex only) at the tail.
+        var providers = ProviderCatalog.make()
+        providers.append(contentsOf: AccountProviders.extraProviders(for: accounts.accounts))
         let registry = WidgetRegistry.from(providers)
         let apiKeyProviders = providers.compactMap { $0 as? any APIKeyManaging }
         let enablement = ProviderEnablementStore()
@@ -117,6 +127,11 @@ final class AppContainer {
         self.enablement = enablement
         self.apiKeyProviders = apiKeyProviders
         self.notificationSettings = notificationSettings
+        // Break the layout↔data cycle with a late binding: layout hides duplicate accounts using the
+        // emails the data store resolves at refresh time (and feeds them through `visiblePlaced`, so the
+        // dashboard, Customize, and menu bar all dedupe from this one input).
+        layout.accountEmailLookup = { [dataStore] in dataStore.accountEmail(for: $0) }
+        self.accounts = accounts
         self.layout = layout
         self.dataStore = dataStore
         self.iCloudSync = iCloudSync

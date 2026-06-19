@@ -169,6 +169,7 @@ struct SettingsScreen: View {
                     .padding(.bottom, 8)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            AccountsSettingsSection()
             commandLineSection
             advancedSection
             // Visible whenever the updater is active (only the signed release build ships a feed; the
