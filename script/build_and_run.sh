@@ -25,8 +25,11 @@ APP_DISPLAY="OpenUsage"                 # user-facing app name
 BUNDLE_ID="${BUNDLE_ID:-com.robinebers.openusage.dev}"
 ICLOUD_CONTAINER_ID="iCloud.com.robinebers.openusage.dev"
 MIN_SYSTEM_VERSION="15.0"
-APP_VERSION="0.7.0"
-APP_BUILD="0.7.0"
+# Stamp the dev build with the nearest upstream tag so the bundle reports its real base version
+# (About box, local usage API). Overridable via APP_VERSION; falls back for non-git checkouts.
+APP_VERSION="${APP_VERSION:-$(git -C "$(dirname "${BASH_SOURCE[0]}")/.." describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')}"
+APP_VERSION="${APP_VERSION:-0.7.0}"
+APP_BUILD="$APP_VERSION"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
