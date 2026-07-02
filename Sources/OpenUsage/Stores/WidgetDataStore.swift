@@ -512,6 +512,11 @@ final class WidgetDataStore {
         return StalenessHint(label: "Outdated", tooltip: "Last updated \(duration) ago")
     }
 
+    /// The signed-in account email for a provider's latest snapshot (Claude multi-account); nil otherwise.
+    func accountEmail(for providerID: String) -> String? {
+        snapshots[providerID]?.accountEmail
+    }
+
     private func resolve(_ line: MetricLine, descriptor: WidgetDescriptor) -> WidgetData? {
         switch line {
         case .progress(_, let used, let limit, let format, let resetsAt, let periodDurationMs, _):

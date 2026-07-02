@@ -102,12 +102,19 @@ final class LayoutStore {
         didSet { persistence.saveMenuBarStyle(menuBarStyle) }
     }
 
+    /// Resolves a provider instance's signed-in account email from the live snapshots. Injected after
+    /// construction (the data store needs the layout, so the cycle is broken with a late binding); the
+    /// default "no email" keeps the layout usable headless, in tests, and during its own init. Single
+    /// input to duplicate-account hiding, so every surface agrees on which accounts are visible.
+    var accountEmailLookup: @MainActor (String) -> String? = { _ in nil }
+
     let registry: WidgetRegistry
     private let persistence: LayoutPersistence
     private let defaultMetricIDs: [String]
     private let defaultPinnedMetricIDs: [String]
     private let defaultExpandedMetricIDs: [String]
     var defaultExpandedOnEnableIDs: Set<String>
+    private let seededAccountsKey: String
     let isProviderEnabled: @MainActor (String) -> Bool
 
     init(
@@ -126,6 +133,7 @@ final class LayoutStore {
         self.defaultMetricIDs = defaultMetricIDs
         self.defaultPinnedMetricIDs = defaultPinnedMetricIDs
         self.defaultExpandedMetricIDs = defaultExpandedMetricIDs
+        self.seededAccountsKey = "\(storageKey).seededAccounts"
         self.isProviderEnabled = isProviderEnabled
 
         let initial = LayoutBootstrap.load(
@@ -138,7 +146,27 @@ final class LayoutStore {
                 expandedMetricIDs: defaultExpandedMetricIDs
             )
         )
-        placed = initial.placed
+        var initialPlaced = initial.placed
+        // Seed a newly added extra-account provider (instance id "provider@slot") into the layout ONCE,
+        // mirroring the metrics its base type currently has placed, so the account shows up the first time
+        // it's seen instead of staying hidden. Tracked in `seededAccountIDs` so it never re-runs — turning
+        // off all of an account's metrics is then respected on the next launch instead of being resurrected.
+        // Ongoing toggles stay in sync across accounts via `setMetricEnabled`. Base providers are untouched.
+        var seededAccountIDs = Set(defaults.stringArray(forKey: seededAccountsKey) ?? [])
+        for provider in registry.providers where provider.id.contains("@") && !seededAccountIDs.contains(provider.id) {
+            let baseType = Self.baseProviderType(provider.id)
+            for descriptor in registry.descriptors(for: provider.id) {
+                let baseDescriptorID = "\(baseType).\(Self.metricSuffix(descriptor.id, providerID: provider.id))"
+                if initialPlaced.contains(where: { $0.descriptorID == baseDescriptorID }) {
+                    initialPlaced.append(PlacedWidget(descriptorID: descriptor.id))
+                }
+            }
+            seededAccountIDs.insert(provider.id)
+        }
+        // Forget accounts that no longer exist, so a removed-then-re-added account seeds fresh next time.
+        seededAccountIDs.formIntersection(registry.providers.map(\.id).filter { $0.contains("@") })
+        defaults.set(Array(seededAccountIDs), forKey: seededAccountsKey)
+        placed = initialPlaced
         providerOrder = initial.providerOrder
         metricOrderByProvider = initial.metricOrderByProvider
         pinnedMetricIDs = initial.pinnedMetricIDs
@@ -172,21 +200,38 @@ final class LayoutStore {
 
     // MARK: - Customize mutations
 
-    /// Toggle a metric on (add to the placed list) or off (remove it). The single seam the Customize
-    /// switches drive, so on/off goes through the same add/remove path the rest of the app uses.
+    /// Toggle a metric on (add to the placed list) or off (remove it). The change is mirrored to every
+    /// account of the same provider type, so a provider's enabled metrics stay in sync across all its
+    /// accounts (e.g. both Claude logins show the same statistics).
     func setMetricEnabled(_ descriptorID: String, _ enabled: Bool) {
         recordingUndoStep {
-            if enabled {
-                if defaultExpandedOnEnableIDs.remove(descriptorID) != nil {
-                    expandedMetricIDs.insert(descriptorID)
-                    persistExpanded()
-                    persistExpandOnEnable()
+            for id in sameTypeDescriptorIDs(matching: descriptorID) {
+                if enabled {
+                    if defaultExpandedOnEnableIDs.remove(id) != nil {
+                        expandedMetricIDs.insert(id)
+                        persistExpanded()
+                        persistExpandOnEnable()
+                    }
+                    add(id)
+                } else if let widget = placed.first(where: { $0.descriptorID == id }) {
+                    remove(widget.id)
                 }
-                add(descriptorID)
-            } else if let widget = placed.first(where: { $0.descriptorID == descriptorID }) {
-                remove(widget.id)
             }
         }
+    }
+
+    /// Every descriptor id across accounts of the same provider type that shares `descriptorID`'s metric
+    /// — e.g. "claude.session" -> ["claude.session", "claude@work.session", …]. Used so a metric toggle
+    /// applies to all accounts of a provider.
+    private func sameTypeDescriptorIDs(matching descriptorID: String) -> [String] {
+        guard let providerID = registry.descriptor(id: descriptorID)?.providerID else { return [descriptorID] }
+        let baseType = Self.baseProviderType(providerID)
+        let suffix = Self.metricSuffix(descriptorID, providerID: providerID)
+        return registry.providers
+            .map(\.id)
+            .filter { Self.baseProviderType($0) == baseType }
+            .map { "\($0).\(suffix)" }
+            .filter { registry.descriptor(id: $0) != nil }
     }
 
     // MARK: - Undo (#603)
@@ -255,6 +300,17 @@ final class LayoutStore {
         persistPins()
         persistExpanded()
         persistExpandOnEnable()
+    }
+
+    /// The provider *type* of an instance id: "claude@work" -> "claude", "claude" -> "claude".
+    static func baseProviderType(_ providerID: String) -> String {
+        String(providerID.split(separator: "@").first ?? Substring(providerID))
+    }
+
+    /// The metric suffix of a descriptor id within its provider: "claude@work.session" -> "session".
+    static func metricSuffix(_ descriptorID: String, providerID: String) -> String {
+        let prefix = providerID + "."
+        return descriptorID.hasPrefix(prefix) ? String(descriptorID.dropFirst(prefix.count)) : descriptorID
     }
 
     // MARK: - Menu bar pins
