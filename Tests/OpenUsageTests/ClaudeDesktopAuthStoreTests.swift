@@ -302,8 +302,11 @@ final class ClaudeDesktopAuthStoreTests: XCTestCase {
         }
 
         XCTAssertNil(badge(snapshot.lines, "Error"))
-        XCTAssertEqual(httpClient.requests.count, 2)
-        XCTAssertTrue(httpClient.requests.last?.headers["Authorization"]?.contains("desktop-token") == true)
+        // Multi-account resolves the card's account email with an extra `/api/oauth/profile` call after a
+        // successful usage fetch, so filter to usage requests to keep the CLI→Desktop fallback the subject.
+        let usageRequests = httpClient.requests.filter { $0.url.absoluteString.hasSuffix("/api/oauth/usage") }
+        XCTAssertEqual(usageRequests.count, 2)
+        XCTAssertTrue(usageRequests.last?.headers["Authorization"]?.contains("desktop-token") == true)
     }
 
     @MainActor
@@ -348,8 +351,11 @@ final class ClaudeDesktopAuthStoreTests: XCTestCase {
         }
 
         XCTAssertNil(badge(snapshot.lines, "Error"))
-        XCTAssertEqual(httpClient.requests.count, 2)
-        XCTAssertTrue(httpClient.requests.last?.headers["Authorization"]?.contains("desktop-token") == true)
+        // Multi-account resolves the card's account email with an extra `/api/oauth/profile` call after a
+        // successful usage fetch, so filter to usage requests to keep the CLI→Desktop fallback the subject.
+        let usageRequests = httpClient.requests.filter { $0.url.absoluteString.hasSuffix("/api/oauth/usage") }
+        XCTAssertEqual(usageRequests.count, 2)
+        XCTAssertTrue(usageRequests.last?.headers["Authorization"]?.contains("desktop-token") == true)
     }
 
     @MainActor
