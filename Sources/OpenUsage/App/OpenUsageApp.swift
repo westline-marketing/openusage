@@ -19,7 +19,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // so close together that the workspace guard's LaunchServices snapshot misses the peer.
         var holdsLock = false
         if let bundleID = Bundle.main.bundleIdentifier {
-            switch SingleInstanceLock.acquire(bundleIdentifier: bundleID) {
+            // An intentional relaunch (`AppControl.restart`) starts us while the exiting instance
+            // still holds the lock for a beat — wait it out instead of declaring a duplicate, which
+            // would kill this copy too and leave no instance at all. The exiting side is already
+            // terminating; typical wait is well under a second.
+            let handoffTimeout: TimeInterval =
+                CommandLine.arguments.contains(AppControl.relaunchHandoffArgument) ? 8 : 0
+            switch SingleInstanceLock.acquire(bundleIdentifier: bundleID, retryingFor: handoffTimeout) {
             case .acquired(let token):
                 singleInstanceLock = token
                 holdsLock = true

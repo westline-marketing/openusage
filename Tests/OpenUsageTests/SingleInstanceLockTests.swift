@@ -43,6 +43,54 @@ final class SingleInstanceLockTests: XCTestCase {
         token = nil
     }
 
+    /// The relaunch-handoff wait (#restart race): the replacement instance must acquire the lock as
+    /// soon as the exiting holder releases it, instead of declaring itself a duplicate on the first
+    /// attempt — which killed both copies and left the app gone after an account change.
+    func testHandoffRetryAcquiresOnceTheHolderReleasesMidWait() throws {
+        let lockURL = makeLockURL()
+        let box = TokenBox()
+
+        switch SingleInstanceLock.acquire(at: lockURL) {
+        case .acquired(let acquired):
+            box.token = acquired
+        default:
+            XCTFail("first acquisition should own the lock")
+        }
+
+        // Release from another thread while the retry loop below blocks this one — the shape of an
+        // exiting predecessor instance.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
+            box.token = nil
+        }
+        switch SingleInstanceLock.acquire(at: lockURL, retryingFor: 3) {
+        case .acquired:
+            break
+        default:
+            XCTFail("handoff retry should acquire once the holder releases")
+        }
+    }
+
+    func testHandoffRetryStillGivesUpWhenTheHolderNeverReleases() throws {
+        let lockURL = makeLockURL()
+        var token: SingleInstanceLock.Token?
+
+        switch SingleInstanceLock.acquire(at: lockURL) {
+        case .acquired(let acquired):
+            token = acquired
+        default:
+            XCTFail("first acquisition should own the lock")
+        }
+
+        let start = Date()
+        assertAlreadyRunning(SingleInstanceLock.acquire(at: lockURL, retryingFor: 0.35))
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(start), 0.3)
+        withExtendedLifetime(token) { token = nil }
+    }
+
+    private final class TokenBox: @unchecked Sendable {
+        var token: SingleInstanceLock.Token?
+    }
+
     private func makeLockURL() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("openusage-lock-\(UUID().uuidString)", isDirectory: true)

@@ -29,9 +29,28 @@ enum SingleInstanceLock {
         }
     }
 
+    /// `acquire`, but retrying while the lock is held for up to `timeout` before giving up as
+    /// `.alreadyRunning`. Used on an intentional relaunch (`AppControl.restart`): the replacement
+    /// instance necessarily starts while the exiting one still holds the lock for a beat, and
+    /// declaring it a duplicate there kills BOTH copies — the replacement suicides, then the old
+    /// instance finishes terminating, and the app is simply gone.
+    static func acquire(at lockURL: URL, retryingFor timeout: TimeInterval) -> Acquisition {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            let acquisition = acquire(at: lockURL)
+            if case .alreadyRunning = acquisition, Date() < deadline {
+                usleep(100_000)
+                continue
+            }
+            return acquisition
+        }
+    }
+
     /// Locks `Application Support/OpenUsage/<bundle id>.lock` — a directory the app already uses
-    /// for its own state, and stable no matter where the app bundle itself lives.
-    static func acquire(bundleIdentifier: String) -> Acquisition {
+    /// for its own state, and stable no matter where the app bundle itself lives. `retryingFor`
+    /// waits out a still-exiting predecessor on an intentional relaunch; 0 keeps the ordinary
+    /// single non-blocking attempt.
+    static func acquire(bundleIdentifier: String, retryingFor timeout: TimeInterval = 0) -> Acquisition {
         guard let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -41,7 +60,7 @@ enum SingleInstanceLock {
         let lockURL = appSupport
             .appendingPathComponent("OpenUsage", isDirectory: true)
             .appendingPathComponent("\(bundleIdentifier).lock")
-        return acquire(at: lockURL)
+        return acquire(at: lockURL, retryingFor: timeout)
     }
 
     /// Split out from the well-known-path entry point so tests can aim the lock at a temp file.

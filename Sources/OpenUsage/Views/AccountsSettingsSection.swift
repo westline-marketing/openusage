@@ -64,8 +64,12 @@ struct AccountsSettingsSection: View {
 
     private func resolveEmails() async {
         for account in container.accounts.accounts {
-            if emails[account.instanceID] == nil,
-               let email = await AccountIdentity.email(provider: account.provider, configDir: account.configDir) {
+            guard emails[account.instanceID] == nil else { continue }
+            // The live profile probe rate-limits aggressively; when it fails, fall back to the email
+            // the provider's own refresh last resolved, so the row doesn't gray out (path shown,
+            // rename disabled) for an account that's actually connected fine.
+            if let email = await AccountIdentity.email(provider: account.provider, configDir: account.configDir)
+                ?? container.dataStore.accountEmail(for: account.instanceID) {
                 emails[account.instanceID] = email
             }
         }
