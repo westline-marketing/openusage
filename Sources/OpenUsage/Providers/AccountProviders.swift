@@ -19,7 +19,10 @@ enum AccountProviders {
                     displayName: "Claude · \(account.label)",
                     authStore: ClaudeAuthStore(
                         environment: OverrideEnvironment(["CLAUDE_CONFIG_DIR": account.configDir])
-                    )
+                    ),
+                    // Scopes the spend scan to this account's own data dirs (matched by signed-in
+                    // email) so each card prices its own subscription instead of the machine-wide pool.
+                    accountConfigDir: account.configDir
                 )
             case "codex":
                 return CodexProvider(

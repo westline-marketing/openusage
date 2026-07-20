@@ -51,7 +51,7 @@ Rows with a reset date tick every 30 seconds, so countdowns and pace stay live b
 
 ## Accounts
 
-If you've added extra Claude or Codex logins in [Settings → Accounts](settings.md#accounts), each account is its own section, labeled with its name (or signed-in email) so the logins are easy to tell apart. Two logins that resolve to the same email collapse to a single section, so a duplicate never shows twice.
+If you've added extra Claude or Codex logins in [Settings → Accounts](settings.md#accounts), each account is its own section, labeled with its name (or signed-in email) so the logins are easy to tell apart. Two logins that resolve to the same email collapse to a single section, so a duplicate never shows twice (and the hidden copy is left out of Total Spend, so the same sessions are never counted twice there either). Each extra Claude account's spend rows cover only the data folders signed into its own email — see [Settings → Accounts](settings.md#accounts).
 
 ## Right-click menus
 

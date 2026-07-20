@@ -66,13 +66,44 @@ actor ClaudeLogUsageScanner {
         self.cacheIdentityOverride = cacheIdentityOverride
     }
 
+    /// Restricts a scan to one account's Claude data directories: the account's own config dir plus
+    /// every discovered dir whose signed-in email matches. Used by extra-account provider instances so
+    /// each card prices only its own subscription's sessions instead of repeating the machine-wide total.
+    struct AccountScope: Sendable {
+        /// The account's own config dir (always scanned, even before it has any sessions).
+        var configDir: String
+        /// The account's resolved email; `nil` (identity not yet resolved) scans only `configDir`.
+        var email: String?
+    }
+
     /// Scan the last `daysBack` days of Claude logs. Returns `nil` when no Claude data directory or
     /// no log files exist (the spend tiles then render "No data"); returns an empty series when logs
     /// exist but have no usage in the window.
-    func scan(daysBack: Int = 30, now: Date = Date(), pricing: ModelPricing) async -> LogUsageScan? {
+    ///
+    /// With an `accountScope`, roots are the scope's matching dirs instead of the ambient config —
+    /// Cowork sandboxes are deliberately excluded there (they belong to the desktop app's login, which
+    /// the default instance speaks for).
+    func scan(
+        daysBack: Int = 30,
+        now: Date = Date(),
+        pricing: ModelPricing,
+        accountScope: AccountScope? = nil
+    ) async -> LogUsageScan? {
         let since = JSONLScanning.sinceDate(daysBack: daysBack, now: now)
-        let cacheIdentity = parseCacheIdentity()
-        let roots = claudeRoots()
+        // Account-scoped scans share one stable partition (the underlying cache is keyed per file, and
+        // the scanner explicitly tolerates disjoint root sets per call) instead of the ambient-config
+        // identity, which would misdescribe their roots.
+        let cacheIdentity = accountScope == nil
+            ? parseCacheIdentity()
+            : (cacheIdentityOverride ?? "extra-accounts")
+        let roots: [URL]
+        if let accountScope {
+            roots = Self.accountScopedRoots(
+                scope: accountScope, home: homeDirectory(), environment: environment
+            )
+        } else {
+            roots = claudeRoots()
+        }
         guard !roots.isEmpty else {
             _ = await scanner.items(
                 from: [], since: since, cacheIdentity: cacheIdentity, parse: Self.parseFile
@@ -175,6 +206,70 @@ actor ClaudeLogUsageScanner {
             addIfValid(sandbox)
         }
         return roots
+    }
+
+    /// The data dirs belonging to one account: its own config dir, plus every candidate Claude config
+    /// dir whose signed-in email matches the scope's. Candidates are the default roots
+    /// (`$XDG_CONFIG_HOME/claude`, `~/.claude`) and any `~/.claude*` sibling with a `projects/`
+    /// folder — the common layout for running separate logins via `CLAUDE_CONFIG_DIR`. A dir's email
+    /// comes from its `.claude.json` (`oauthAccount.emailAddress`); the default `~/.claude` dir keeps
+    /// that file at `~/.claude.json`, so it is consulted as the fallback. Dirs with no resolvable
+    /// email stay with the default instance — attribution is only ever claimed on an email match.
+    static func accountScopedRoots(
+        scope: AccountScope,
+        home: URL,
+        environment: EnvironmentReading
+    ) -> [URL] {
+        var roots: [URL] = []
+        var seen: Set<String> = []
+
+        func add(_ url: URL) {
+            let standardized = url.resolvingSymlinksInPath().standardizedFileURL
+            guard seen.insert(standardized.path).inserted else { return }
+            roots.append(standardized)
+        }
+
+        add(URL(fileURLWithPath: expandHome(scope.configDir)))
+
+        guard let email = scope.email?.lowercased(), !email.isEmpty else { return roots }
+
+        var candidates: [URL] = []
+        let xdg = environment.value(for: "XDG_CONFIG_HOME")?.nilIfEmpty.map { URL(fileURLWithPath: expandHome($0)) }
+            ?? home.appendingPathComponent(".config")
+        candidates.append(xdg.appendingPathComponent("claude"))
+        let homeEntries = (try? FileManager.default.contentsOfDirectory(
+            at: home, includingPropertiesForKeys: [.isDirectoryKey], options: []
+        )) ?? []
+        candidates.append(contentsOf: homeEntries.filter {
+            $0.lastPathComponent.hasPrefix(".claude")
+                && (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+        })
+
+        for candidate in candidates.sorted(by: { $0.path < $1.path }) {
+            guard FileManager.default.fileExists(atPath: candidate.appendingPathComponent("projects").path) else {
+                continue
+            }
+            var configFile = candidate.appendingPathComponent(".claude.json")
+            if !FileManager.default.fileExists(atPath: configFile.path),
+               candidate.lastPathComponent == ".claude" {
+                configFile = home.appendingPathComponent(".claude.json")
+            }
+            if signedInEmail(of: configFile) == email {
+                add(candidate)
+            }
+        }
+        return roots
+    }
+
+    /// The `oauthAccount.emailAddress` a Claude config file records, lowercased; `nil` when the file
+    /// is absent, unreadable, or carries no signed-in account.
+    private static func signedInEmail(of configFile: URL) -> String? {
+        guard let data = try? Data(contentsOf: configFile),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let account = object["oauthAccount"] as? [String: Any],
+              let email = (account["emailAddress"] as? String)?.nilIfEmpty
+        else { return nil }
+        return email.lowercased()
     }
 
     /// The `.claude` dirs Cowork (the Claude desktop app's agent mode) creates, one per session,

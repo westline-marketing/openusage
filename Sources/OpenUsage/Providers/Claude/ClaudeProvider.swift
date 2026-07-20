@@ -8,9 +8,15 @@ final class ClaudeProvider: ProviderRuntime {
     let authStore: ClaudeAuthStore
     let usageClient: ClaudeUsageClient
     let logUsageScanner: ClaudeLogUsageScanner
+    /// Extra-account instances carry their own config dir so the spend scan can be scoped to the
+    /// data dirs signed into this account's email; `nil` (the default instance) scans the ambient
+    /// machine-wide roots as before.
+    let accountConfigDir: String?
     let now: @Sendable () -> Date
     let pricing: @Sendable () async -> ModelPricing
-    /// Cached once resolved — the token's account email is stable across refreshes.
+    /// Cached once resolved; cleared when the credential pair changes (an in-place re-login can swap
+    /// the signed-in account, and a stale email would keep the card mislabeled — or hidden as a
+    /// duplicate — until relaunch).
     private var resolvedAccountEmail: String?
 
     /// Last successful live-usage result and a rate-limit cooldown, carried across refreshes (the provider
@@ -32,6 +38,7 @@ final class ClaudeProvider: ProviderRuntime {
         authStore: ClaudeAuthStore = ClaudeAuthStore(),
         usageClient: ClaudeUsageClient = ClaudeUsageClient(),
         logUsageScanner: ClaudeLogUsageScanner = ClaudeLogUsageScanner(),
+        accountConfigDir: String? = nil,
         now: @escaping @Sendable () -> Date = Date.init,
         pricing: @escaping @Sendable () async -> ModelPricing = { await ModelPricingStore.shared.current() }
     ) {
@@ -47,6 +54,7 @@ final class ClaudeProvider: ProviderRuntime {
         self.authStore = authStore
         self.usageClient = usageClient
         self.logUsageScanner = logUsageScanner
+        self.accountConfigDir = accountConfigDir
         self.now = now
         self.pricing = pricing
     }
@@ -266,7 +274,14 @@ final class ClaudeProvider: ProviderRuntime {
         // shared pricing store, merged with Claude usage that happened inside pi (attributed back here).
         // Both scans run on their scanner actors, off the main actor.
         let pricing = await pricing()
-        let nativeScan = await logUsageScanner.scan(now: now(), pricing: pricing)
+        // An extra-account instance prices only the data dirs signed into its own email, so each card
+        // shows that subscription's spend rather than repeating the machine-wide total. Before the
+        // account email resolves, only the account's own config dir is scanned — spend shows "No data"
+        // instead of borrowing another account's figures.
+        let accountScope = accountConfigDir.map {
+            ClaudeLogUsageScanner.AccountScope(configDir: $0, email: resolvedAccountEmail)
+        }
+        let nativeScan = await logUsageScanner.scan(now: now(), pricing: pricing, accountScope: accountScope)
         let piScan = await PiUsageScanner.shared.scan(cardID: provider.id, now: now(), pricing: pricing)
         var usageHistory: ProviderUsageHistory?
         // Cancellation can land between the native and pi scans. Treat the pair as one unit so a
@@ -390,13 +405,16 @@ final class ClaudeProvider: ProviderRuntime {
     }
 
     /// Cache state belongs to the complete access + refresh credential pair. A login change therefore
-    /// clears both last-good usage and cooldown, even when the two accounts share an access token.
+    /// clears last-good usage, cooldown, AND the resolved account email, even when the two accounts
+    /// share an access token. (An ordinary token rotation keeps the fingerprint in sync in
+    /// `refreshAccessToken`, so this only fires on a genuine login change.)
     private func activateLiveUsageCache(for credentials: ClaudeOAuth) {
         let fingerprint = Self.credentialFingerprint(credentials)
         guard cachedCredentialFingerprint != fingerprint else { return }
         cachedCredentialFingerprint = fingerprint
         lastGoodUsage = nil
         rateLimitedUntil = nil
+        resolvedAccountEmail = nil
     }
 
     private static func credentialFingerprint(_ credentials: ClaudeOAuth) -> Data {

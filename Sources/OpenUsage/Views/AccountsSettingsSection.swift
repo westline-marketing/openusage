@@ -13,6 +13,11 @@ struct AccountsSettingsSection: View {
     @State private var newLabel = ""
     @State private var loginState: LoginState = .idle
     @State private var changedAccounts = false
+    /// The account row currently running an in-place re-login, if any. One at a time — the CLI login
+    /// flow owns the browser, and a second concurrent login would fight it.
+    @State private var reloginInstanceID: String?
+    /// Per-row re-login failure messages, keyed by instance id.
+    @State private var reloginFailures: [String: String] = [:]
     /// Resolved account emails (instanceID -> email), filled in asynchronously so each row can show
     /// which account it is (the reliable profile-API email, not the config-dir path).
     @State private var emails: [String: String] = [:]
@@ -67,13 +72,16 @@ struct AccountsSettingsSection: View {
     }
 
     /// Every email already signed in for `provider` — its default login plus each added account of that
-    /// provider, lowercased — so the add flow can reject logging the same account in twice.
-    private func existingEmails(forProvider provider: String) async -> Set<String> {
+    /// provider, lowercased — so the add flow can reject logging the same account in twice. A re-login
+    /// passes its own row as `excludingInstanceID` (its config dir now resolves to the freshly logged-in
+    /// email, which must not count as a conflict with itself).
+    private func existingEmails(forProvider provider: String, excludingInstanceID excluded: String? = nil) async -> Set<String> {
         var result = Set<String>()
         if let defaultEmail = await AccountIdentity.email(provider: provider, configDir: nil) {
             result.insert(defaultEmail.lowercased())
         }
-        for account in container.accounts.accounts where account.provider == provider {
+        for account in container.accounts.accounts
+        where account.provider == provider && account.instanceID != excluded {
             if let email = await AccountIdentity.email(provider: provider, configDir: account.configDir) {
                 result.insert(email.lowercased())
             }
@@ -82,32 +90,88 @@ struct AccountsSettingsSection: View {
     }
 
     private func accountRow(_ account: ExtraAccount) -> some View {
-        HStack(spacing: 10) {
-            ProviderIcon(source: .providerMark(account.provider))
-                .frame(width: 18, height: 18)
-            VStack(alignment: .leading, spacing: 1) {
-                TextField(defaultName(for: account), text: nameBinding(for: account))
-                    .textFieldStyle(.plain)
-                    .disabled(emails[account.instanceID] == nil)
-                Text(emails[account.instanceID] ?? account.configDir)
-                    .font(.caption2)
-                    .foregroundStyle(emails[account.instanceID] != nil ? .secondary : .tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 10) {
+                ProviderIcon(source: .providerMark(account.provider))
+                    .frame(width: 18, height: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    TextField(defaultName(for: account), text: nameBinding(for: account))
+                        .textFieldStyle(.plain)
+                        .disabled(emails[account.instanceID] == nil)
+                    Text(emails[account.instanceID] ?? account.configDir)
+                        .font(.caption2)
+                        .foregroundStyle(emails[account.instanceID] != nil ? .secondary : .tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 8)
+                if reloginInstanceID == account.instanceID {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Button {
+                        relogIn(account)
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Log In Again")
+                    .disabled(reloginInstanceID != nil || loginState == .loggingIn)
+                }
+                Button(role: .destructive) {
+                    container.accounts.remove(instanceID: account.instanceID)
+                    changedAccounts = true
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Remove Account")
+                .disabled(reloginInstanceID == account.instanceID)
             }
-            Spacer(minLength: 8)
-            Button(role: .destructive) {
-                container.accounts.remove(instanceID: account.instanceID)
-                changedAccounts = true
-            } label: {
-                Image(systemName: "trash")
+            if reloginInstanceID == account.instanceID {
+                Text("Complete the login in your browser…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if let failure = reloginFailures[account.instanceID] {
+                Text(failure)
+                    .font(.caption)
+                    .foregroundStyle(Theme.notice)
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Remove Account")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, density.controlRowPadding)
+    }
+
+    /// Re-runs the provider CLI login into the account's EXISTING config dir — the recovery path for an
+    /// expired session (`invalid_grant`), whose card otherwise quietly falls back to Desktop credentials
+    /// and gets hidden as a duplicate. Credentials are re-read on every refresh, so no relaunch is
+    /// needed; the row's email and the dashboard card recover on the refresh kicked off at the end.
+    private func relogIn(_ account: ExtraAccount) {
+        reloginInstanceID = account.instanceID
+        reloginFailures[account.instanceID] = nil
+        Task {
+            defer { reloginInstanceID = nil }
+            do {
+                try await AccountLogin.run(provider: account.provider, configDir: account.configDir)
+                // Signing into an account that's already on another row would just get this card hidden
+                // as a duplicate. The old credentials are already replaced (nothing to roll back), so
+                // keep the login but say plainly how to fix it.
+                if let newEmail = await AccountIdentity.email(provider: account.provider, configDir: account.configDir),
+                   await existingEmails(forProvider: account.provider, excludingInstanceID: account.instanceID)
+                       .contains(newEmail.lowercased()) {
+                    reloginFailures[account.instanceID] =
+                        "\(newEmail) is already signed in on another row — log in again with this account's own login."
+                }
+                emails[account.instanceID] = nil
+                await resolveEmails()
+                container.dataStore.clearFailureBackoff(for: account.instanceID)
+                await container.dataStore.refresh(providerID: account.instanceID, force: true)
+            } catch {
+                reloginFailures[account.instanceID] = error.localizedDescription
+            }
+        }
     }
 
     private var addButton: some View {

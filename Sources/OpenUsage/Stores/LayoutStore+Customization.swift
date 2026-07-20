@@ -47,10 +47,14 @@ extension LayoutStore {
     /// user's provider order — the exact set the Total Spend card aggregates. Deliberately *not*
     /// `displayGroups`: a provider whose every metric is hidden in Customize still spends money and
     /// must still count, and look-alike dollar rows from other providers (OpenRouter's API-spend
-    /// "Today") must not.
+    /// "Today") must not. Duplicate-account instances ARE excluded — two logins of the same account
+    /// price the same sessions, so counting the hidden copy would double its spend in the total.
     var spendCapableProviders: [Provider] {
         let capableIDs = Set(registry.descriptors.filter(\.isSpendTile).map(\.providerID))
-        return orderedProviders().filter { capableIDs.contains($0.id) && isProviderEnabled($0.id) }
+        let duplicates = duplicateProviderIDs
+        return orderedProviders().filter {
+            capableIDs.contains($0.id) && isProviderEnabled($0.id) && !duplicates.contains($0.id)
+        }
     }
 
     // MARK: - Provider grouping

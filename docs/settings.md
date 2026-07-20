@@ -65,9 +65,12 @@ Add more than one **Claude** or **Codex** login so several subscriptions show si
 
 - **Add Account…** — pick the provider, give it a label (e.g. "Work"), and **Log In**. The provider's CLI opens its normal browser login, and the account is stored in its own config directory so it never disturbs your default login.
 - **Rename** — edit the name on an account row; names are keyed by email, so they follow the account across the dashboard.
+- **Log In Again** — the circular-arrow icon re-runs the browser login into the account's existing slot. Use it when an account's session expires (its row shows a folder path instead of an email and its dashboard card stops updating or disappears). Make sure to complete the browser login with that row's own account — signing in with an account that's already on another row is flagged on the row. The account recovers on the spot; no relaunch needed.
 - **Remove** — the trash icon drops the account.
 
 Account changes apply on the next launch (the provider list is built at startup), so a **Relaunch** button appears after a change. A new account starts with the same metrics enabled as that provider's default login; after that, toggling a metric in Customize applies to every account of that provider, so they stay in sync. Logging in to an account that's already added is rejected, and if the same email ends up signed in twice the duplicate card is hidden.
+
+**Spend per account (Claude):** each extra Claude account's spend rows and trend cover only the Claude data folders signed into that account's email — the account's own slot, plus any `~/.claude*` folder (for example a second folder you point `CLAUDE_CONFIG_DIR` at) whose signed-in login matches. Folders with no recognizable login stay with the default Claude card. So each card shows its own subscription's usage instead of every card repeating the machine-wide total, and hidden duplicate cards never double the Total Spend figure.
 
 ## Advanced
 
